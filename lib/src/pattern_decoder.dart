@@ -41,12 +41,16 @@ class PatternDecoder implements MoneyDecoder<String> {
 
     var compressedPattern = compressDigits(pattern);
     compressedPattern = compressWhitespace(compressedPattern);
-    final compressedMonetaryValue = compressWhitespace(monetaryValue);
+    var compressedMonetaryValue = compressWhitespace(monetaryValue);
     var codeIndex = 0;
 
-    var isNegative = false;
+    var isNegative = monetaryValue.startsWith('-');
     var seenMajor = false;
     var seenDecimal = false;
+
+    if (isNegative) {
+      compressedMonetaryValue = compressedMonetaryValue.replaceFirst('-', '');
+    }
 
     final valueQueue =
         ValueQueue(compressedMonetaryValue, currency.groupSeparator);

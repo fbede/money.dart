@@ -40,6 +40,11 @@ class PatternEncoder implements MoneyEncoder<String> {
           "separator '$patternDecimalSeparator'");
     }
 
+    if (pattern.contains('+') && pattern.contains('-')) {
+      throw IllegalPatternException(
+          'A format Pattern may contain only one type of sign. Either a "+" or a "-"');
+    }
+
     var decimalSeparatorIndex = pattern.indexOf(patternDecimalSeparator);
 
     var hasMinor = true;
@@ -55,6 +60,8 @@ class PatternEncoder implements MoneyEncoder<String> {
       final minorPattern = pattern.substring(decimalSeparatorIndex + 1);
       final formattedMinorPart = _formatMinorPart(data, minorPattern);
 
+      print('formatted major part: $formatted');
+
       /// ensure we don't end up with a trailing decimal point.
       if (formattedMinorPart.isNotEmpty) {
         // If the minor part contains a digit (and not just the currency symbol)
@@ -67,6 +74,8 @@ class PatternEncoder implements MoneyEncoder<String> {
       }
     }
 
+    print('formatted: $formatted');
+
     return formatted;
   }
 
@@ -78,10 +87,10 @@ class PatternEncoder implements MoneyEncoder<String> {
     final moneyPattern = _getMoneyPattern(majorPattern);
     _checkZeros(moneyPattern, patternGroupSeparator, minor: false);
 
-    final integerPart = data.integerPart;
+    final formattedMajorUnits = _getFormattedMajorUnits(data, moneyPattern);
 
-    final formattedMajorUnits =
-        _getFormattedMajorUnits(data, moneyPattern, integerPart);
+    print('formattedMajorUnits :$formattedMajorUnits');
+    print('majorPattern: $majorPattern');
 
     // replace the the money components with a single #
     var compressedMajorPattern = _compressMoney(majorPattern);
@@ -89,9 +98,12 @@ class PatternEncoder implements MoneyEncoder<String> {
     final isoCode = _getIsoCode(data, compressedMajorPattern);
     // replaces multiple C's with a single C
     compressedMajorPattern = _compressC(compressedMajorPattern);
+    compressedMajorPattern = _compressSign(compressedMajorPattern, data);
 
     // checks we have only one S.
     _validateS(compressedMajorPattern);
+
+    print('compressedMajorPattern: $compressedMajorPattern');
 
     // Replace the compressed patterns with actual values.
     // The periods and commas have already been removed from the pattern.
@@ -110,6 +122,12 @@ class PatternEncoder implements MoneyEncoder<String> {
         case ' ':
           formatted += ' ';
           break;
+        case '+':
+          formatted += '+';
+          break;
+        case '-':
+          formatted += '-';
+          break;
         case '0':
         case ',':
         case '.':
@@ -123,17 +141,11 @@ class PatternEncoder implements MoneyEncoder<String> {
   }
 
   ///
-  String _getFormattedMajorUnits(
-      MoneyData data, String moneyPattern, BigInt majorUnits) {
-    // format the no. into that pattern.
-    var formattedMajorUnits =
-        NumberFormat(moneyPattern).format(majorUnits.toInt());
+  String _getFormattedMajorUnits(MoneyData data, String moneyPattern) {
+    final majorUnits = data.integerPart;
+    final formattedMajorUnits =
+        NumberFormat(moneyPattern).format(majorUnits.toInt().abs());
 
-    if (!majorUnits.isNegative && data.amount.isNegative) {
-      formattedMajorUnits = '-$formattedMajorUnits';
-    }
-
-    // Convert to the MoneyData's preferred group separator
     return formattedMajorUnits.replaceAll(
         patternGroupSeparator, data.currency.groupSeparator);
   }
@@ -201,6 +213,11 @@ class PatternEncoder implements MoneyEncoder<String> {
           break;
         case ' ':
           inMoney = false;
+          break;
+        //TODO:
+        case '+':
+          break;
+        case '-':
           break;
         default:
           throw IllegalPatternException(
@@ -300,6 +317,8 @@ class PatternEncoder implements MoneyEncoder<String> {
     // replaces multiple C's with a single S
     compressedMinorPattern = _compressC(compressedMinorPattern);
 
+    compressedMinorPattern = _compressSign(compressedMinorPattern, data);
+
     // checks we have only one S.
     _validateS(minorPattern);
 
@@ -319,6 +338,12 @@ class PatternEncoder implements MoneyEncoder<String> {
         case ' ':
           formatted += ' ';
           break;
+        case '+':
+          formatted += '+';
+          break;
+        case '-':
+          formatted += '-';
+          break;
         case '0':
         case ',':
         case '.':
@@ -328,7 +353,6 @@ class PatternEncoder implements MoneyEncoder<String> {
               "'$char'");
       }
     }
-
     return formatted;
   }
 
@@ -339,6 +363,59 @@ class PatternEncoder implements MoneyEncoder<String> {
       throw IllegalPatternException('Found a 0 at location $pos. '
           'All money characters (0#,.)must be contiguous');
     }
+  }
+
+  /// Compresses multiple currency pattern signs '++' or '--' into a single
+  /// '+' or '-'.
+  /// Key
+  /// ++ - Always show sign
+  /// -- - Never show sign
+  /// + - Only show sign when positive
+  /// - - Only show sign when negative
+  ///   - Only show sign when negative
+  String _compressSign(String pattern, MoneyData data) {
+    if (pattern.contains('+') && pattern.contains('-')) {
+      throw IllegalPatternException(
+          'A format Pattern may contain only one type of sign. Either a "+" or a "-"');
+    }
+
+    final sign = switch (data.amount.sign) {
+      -1 => '-',
+      0 => '',
+      1 => '+',
+      _ => throw UnsupportedError(
+          'Only numbers -1, 0 and +1 can be parsed into signs')
+    };
+
+    if (pattern.contains('++')) {
+      return pattern.replaceAll(RegExp(r'[\Q+\E]+'), sign);
+    }
+    if (pattern.contains('--')) {
+      return pattern.replaceAll(RegExp(r'[\Q\-\E]+'), '');
+    }
+
+    final result = switch ((
+      pattern.contains('+'),
+      sign == '+',
+      pattern.contains('-'),
+      sign == '-',
+    )) {
+      //when no signPattern is given
+      (false, _, false, true) => pattern.replaceAll(RegExp(r'[\Q\-\E]+'), sign),
+      (false, _, false, _) => pattern
+          .replaceAll(RegExp(r'[\Q+\E]+'), '')
+          .replaceAll(RegExp(r'[\Q\-\E]+'), ''),
+      //when a +ve sign is given and amount is +ve
+      (true, true, _, _) => pattern.replaceAll(RegExp(r'[\Q+\E]+'), sign),
+      //when a -ve sign is given and amount is -ve
+      (_, _, true, true) => pattern.replaceAll(RegExp(r'[\Q\-\E]+'), sign),
+      //others
+      (_, _, _, _) => pattern
+          .replaceAll(RegExp(r'[\Q+\E]+'), '')
+          .replaceAll(RegExp(r'[\Q\-\E]+'), ''),
+    };
+
+    return result;
   }
 
   /// Compresses multiple currency pattern characters 'CCC' into a single
